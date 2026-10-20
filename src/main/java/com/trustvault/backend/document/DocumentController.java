@@ -1,13 +1,14 @@
 
 package com.trustvault.backend.document;
 
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -22,13 +23,6 @@ public class DocumentController {
         this.documentService = documentService;
     }
 
-    public record CreateDocumentRequest(
-            @NotBlank @Size(max = 200) String name,
-            @NotBlank @Size(max = 100) String category,
-            @NotBlank @Size(max = 500) String storagePath
-    ) {
-    }
-
     public record DocumentResponse(
             Long id,
             String name,
@@ -38,16 +32,15 @@ public class DocumentController {
     ) {
     }
 
-    @PostMapping
-    public ResponseEntity<?> createDocument(
-            @Valid @RequestBody CreateDocumentRequest request) {
+    @PostMapping(consumes = "multipart/form-data")
+    public ResponseEntity<?> uploadDocument(
+            @RequestParam @NotBlank @Size(max = 200) String name,
+            @RequestParam @NotBlank @Size(max = 100) String category,
+            @RequestParam("file") MultipartFile file) {
 
         try {
-            Document document = documentService.createDocument(
-                    request.name(),
-                    request.category(),
-                    request.storagePath()
-            );
+            Document document = documentService.uploadDocument(
+                    name, category, file);
 
             return ResponseEntity.status(HttpStatus.CREATED).body(
                     new DocumentResponse(
@@ -63,6 +56,9 @@ public class DocumentController {
             return ResponseEntity.badRequest().body(
                     Map.of("error", ex.getMessage())
             );
+        } catch (IOException ex) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "File upload failed"));
         }
     }
 
@@ -79,7 +75,6 @@ public class DocumentController {
                 .toList();
     }
 
-    // Get a document only if it belongs to the logged-in user.
     @GetMapping("/{id}")
     public ResponseEntity<?> getMyDocumentById(
             @PathVariable Long id) {
