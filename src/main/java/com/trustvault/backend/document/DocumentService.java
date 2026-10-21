@@ -12,23 +12,29 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.NoSuchElementException;
-
+import com.trustvault.backend.audit.AuditService;
 @Service
 public class DocumentService {
 
     private final DocumentRepository documentRepository;
     private final AppUserRepository appUserRepository;
     private final FileStorageService fileStorageService;
-
+    private final DocumentPermissionRepository permissionRepository;
+    private final AuditService auditService;
     public DocumentService(
-            DocumentRepository documentRepository,
-            AppUserRepository appUserRepository,
-            FileStorageService fileStorageService) {
-        this.documentRepository = documentRepository;
-        this.appUserRepository = appUserRepository;
-        this.fileStorageService = fileStorageService;
-    }
+        DocumentRepository documentRepository,
+        AppUserRepository appUserRepository,
+        FileStorageService fileStorageService,
+        DocumentPermissionRepository permissionRepository,
+        AuditService auditService) {
+    this.documentRepository = documentRepository;
+    this.appUserRepository = appUserRepository;
+    this.fileStorageService = fileStorageService;
+    this.permissionRepository = permissionRepository;
+    this.auditService = auditService;
+}
 
     @Transactional
     public Document uploadDocument(
@@ -63,9 +69,16 @@ public class DocumentService {
             document.setOwner(owner);
             document.setUploadedAt(LocalDateTime.now());
 
-            return documentRepository.save(document);
+            Document savedDocument = documentRepository.save(document);
+
+auditService.record(
+        owner.getUsername(),
+        "DOCUMENT_UPLOAD",
+        "Uploaded document ID " + savedDocument.getId()
+                + ", category " + savedDocument.getCategory());
+
+return savedDocument;
         } catch (RuntimeException ex) {
-            // Remove the saved file if its database record cannot be saved.
             fileStorageService.deleteStoredFile(storedName);
             throw ex;
         }
@@ -73,18 +86,37 @@ public class DocumentService {
 
     @Transactional(readOnly = true)
     public List<Document> getMyDocuments() {
-        AppUser owner = getAuthenticatedUser();
-        return documentRepository.findByOwner_Id(owner.getId());
+        AppUser user = getAuthenticatedUser();
+        return documentRepository.findByOwner_Id(user.getId());
     }
 
     @Transactional(readOnly = true)
     public Document getMyDocumentById(Long documentId) {
-        AppUser owner = getAuthenticatedUser();
+        AppUser user = getAuthenticatedUser();
 
-        return documentRepository
-                .findByIdAndOwner_Id(documentId, owner.getId())
+        Document document = documentRepository.findById(documentId)
                 .orElseThrow(() ->
                         new NoSuchElementException("Document not found"));
+
+        // Owners can access their own documents.
+        if (document.getOwner().getId().equals(user.getId())) {
+            return document;
+        }
+
+        // Other users must have READ or EDIT permission.
+        DocumentPermission permission = permissionRepository
+                .findByDocument_IdAndUser_Id(documentId, user.getId())
+                .orElseThrow(() ->
+                        new NoSuchElementException("Document not found"));
+
+        String access = permission.getPermission()
+                .toUpperCase(Locale.ROOT);
+
+        if (!access.equals("READ") && !access.equals("EDIT")) {
+            throw new NoSuchElementException("Document not found");
+        }
+
+        return document;
     }
 
     private AppUser getAuthenticatedUser() {
