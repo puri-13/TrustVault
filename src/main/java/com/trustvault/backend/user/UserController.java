@@ -23,10 +23,12 @@ public class UserController {
             @Valid @RequestBody RegisterRequest request) {
 
         try {
+            // Public registration always creates an OWNER.
+            // Never trust a role submitted by the client.
             AppUser user = userService.registerUser(
                     request.username(),
                     request.password(),
-                    request.role()
+                    UserRole.OWNER
             );
 
             return ResponseEntity.status(HttpStatus.CREATED).body(
