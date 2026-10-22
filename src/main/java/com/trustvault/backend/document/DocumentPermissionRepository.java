@@ -11,6 +11,8 @@ public interface DocumentPermissionRepository
 
     List<DocumentPermission> findByDocument_Id(Long documentId);
 
+    List<DocumentPermission> findByUser_Id(Long userId);
+
     Optional<DocumentPermission> findByDocument_IdAndUser_Id(
             Long documentId, Long userId);
 

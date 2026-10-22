@@ -6,10 +6,7 @@ async function apiRequest(path, username, password, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Basic ${btoa(`${username}:${password}`)}`);
 
-  const response = await fetch(path, {
-    ...options,
-    headers,
-  });
+  const response = await fetch(path, { ...options, headers });
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -26,30 +23,33 @@ async function apiRequest(path, username, password, options = {}) {
   return response.json();
 }
 
+function formatDate(value) {
+  return value ? new Date(value).toLocaleDateString() : "—";
+}
+
 function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authenticatedUser, setAuthenticatedUser] = useState(null);
   const [documents, setDocuments] = useState([]);
+  const [sharedDocuments, setSharedDocuments] = useState([]);
   const [search, setSearch] = useState("");
   const [activePage, setActivePage] = useState("Documents");
   const [loading, setLoading] = useState(false);
+  const [sharedLoading, setSharedLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [showUpload, setShowUpload] = useState(false);
-  // const [documentName, setDocumentName] = useState("");
-  // const [category, setCategory] = useState("General");
-  // const [file, setFile] = useState(null);
   const [documentName, setDocumentName] = useState("");
-const [category, setCategory] = useState("General");
-const [file, setFile] = useState(null);
+  const [category, setCategory] = useState("General");
+  const [file, setFile] = useState(null);
 
-const [selectedDoc, setSelectedDoc] = useState(null);
-const [permissions, setPermissions] = useState([]);
-const [targetUsername, setTargetUsername] = useState("");
-const [permissionLevel, setPermissionLevel] = useState("READ");
-const [sharingLoading, setSharingLoading] = useState(false);
+  const [selectedDoc, setSelectedDoc] = useState(null);
+  const [permissions, setPermissions] = useState([]);
+  const [targetUsername, setTargetUsername] = useState("");
+  const [permissionLevel, setPermissionLevel] = useState("READ");
+  const [sharingLoading, setSharingLoading] = useState(false);
 
   const loadDocuments = useCallback(async (user, pass) => {
     setLoading(true);
@@ -66,6 +66,25 @@ const [sharingLoading, setSharingLoading] = useState(false);
       setPassword("");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadSharedDocuments = useCallback(async (user, pass) => {
+    setSharedLoading(true);
+    setError("");
+
+    try {
+      const data = await apiRequest(
+        "/api/documents/shared-with-me",
+        user,
+        pass
+      );
+      setSharedDocuments(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(err.message);
+      setSharedDocuments([]);
+    } finally {
+      setSharedLoading(false);
     }
   }, []);
 
@@ -88,9 +107,25 @@ const [sharingLoading, setSharingLoading] = useState(false);
     setPassword("");
     setUsername("");
     setDocuments([]);
+    setSharedDocuments([]);
     setSearch("");
     setError("");
     setSuccess("");
+    setActivePage("Documents");
+    setSelectedDoc(null);
+  }
+
+  async function handlePageChange(page) {
+    setActivePage(page);
+    setSearch("");
+    setError("");
+    setSuccess("");
+
+    if (page === "Shared with me" && authenticatedUser) {
+      await loadSharedDocuments(authenticatedUser, password);
+    } else if (page === "Documents" && authenticatedUser) {
+      await loadDocuments(authenticatedUser, password);
+    }
   }
 
   async function handleUpload(event) {
@@ -128,93 +163,105 @@ const [sharingLoading, setSharingLoading] = useState(false);
       setUploading(false);
     }
   }
- async function openSharing(doc) {
-  setSelectedDoc(doc);
-  setPermissions([]);
-  setTargetUsername("");
-  setPermissionLevel("READ");
-  setError("");
-  setSuccess("");
-  setSharingLoading(true);
 
-  try {
-    const data = await apiRequest(
-      `/api/documents/${doc.id}/permissions`,
-      authenticatedUser,
-      password
-    );
-    setPermissions(Array.isArray(data) ? data : []);
-  } catch (err) {
-    setError(err.message);
-    setSelectedDoc(null);
-  } finally {
-    setSharingLoading(false);
-  }
-}
-
-async function grantAccess(event) {
-  event.preventDefault();
-  if (!selectedDoc || !targetUsername.trim()) return;
-
-  setSharingLoading(true);
-  setError("");
-  setSuccess("");
-
-  try {
-    const result = await apiRequest(
-      `/api/documents/${selectedDoc.id}/permissions`,
-      authenticatedUser,
-      password,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: targetUsername.trim(),
-          permission: permissionLevel,
-        }),
-      }
-    );
-
-    setPermissions((current) => [
-      ...current.filter((item) => item.username !== result.username),
-      result,
-    ]);
+  async function openSharing(doc) {
+    setSelectedDoc(doc);
+    setPermissions([]);
     setTargetUsername("");
-    setSuccess(`Access granted to ${result.username} (${result.permission}).`);
-  } catch (err) {
-    setError(err.message);
-  } finally {
-    setSharingLoading(false);
+    setPermissionLevel("READ");
+    setError("");
+    setSuccess("");
+    setSharingLoading(true);
+
+    try {
+      const data = await apiRequest(
+        `/api/documents/${doc.id}/permissions`,
+        authenticatedUser,
+        password
+      );
+      setPermissions(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(err.message);
+      setSelectedDoc(null);
+    } finally {
+      setSharingLoading(false);
+    }
   }
-}
 
-async function revokeAccess(user) {
-  if (!selectedDoc) return;
+  async function grantAccess(event) {
+    event.preventDefault();
+    if (!selectedDoc || !targetUsername.trim()) return;
 
-  setSharingLoading(true);
-  setError("");
-  setSuccess("");
+    setSharingLoading(true);
+    setError("");
+    setSuccess("");
 
-  try {
-    await apiRequest(
-      `/api/documents/${selectedDoc.id}/permissions?username=${encodeURIComponent(user)}`,
-      authenticatedUser,
-      password,
-      { method: "DELETE" }
-    );
+    try {
+      const result = await apiRequest(
+        `/api/documents/${selectedDoc.id}/permissions`,
+        authenticatedUser,
+        password,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: targetUsername.trim(),
+            permission: permissionLevel,
+          }),
+        }
+      );
 
-    setPermissions((current) =>
-      current.filter((item) => item.username !== user)
-    );
-    setSuccess(`Access revoked for ${user}.`);
-  } catch (err) {
-    setError(err.message);
-  } finally {
-    setSharingLoading(false);
+      setPermissions((current) => [
+        ...current.filter((item) => item.username !== result.username),
+        result,
+      ]);
+      setTargetUsername("");
+      setSuccess(`Access granted to ${result.username} (${result.permission}).`);
+
+      // Refresh the shared list so changes appear there too.
+      await loadSharedDocuments(authenticatedUser, password);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSharingLoading(false);
+    }
   }
-}
+
+  async function revokeAccess(user) {
+    if (!selectedDoc) return;
+
+    setSharingLoading(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      await apiRequest(
+        `/api/documents/${selectedDoc.id}/permissions?username=${encodeURIComponent(user)}`,
+        authenticatedUser,
+        password,
+        { method: "DELETE" }
+      );
+
+      setPermissions((current) =>
+        current.filter((item) => item.username !== user)
+      );
+      setSuccess(`Access revoked for ${user}.`);
+      await loadSharedDocuments(authenticatedUser, password);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSharingLoading(false);
+    }
+  }
+
   const filteredDocuments = documents.filter((doc) =>
     `${doc.name} ${doc.category} ${doc.owner}`
+      .toLowerCase()
+      .includes(search.toLowerCase())
+  );
+
+  const filteredSharedDocuments = sharedDocuments.filter((doc) =>
+    `${doc.name} ${doc.category} ${doc.owner} ${doc.permission}`
       .toLowerCase()
       .includes(search.toLowerCase())
   );
@@ -287,12 +334,15 @@ async function revokeAccess(user) {
             <button
               key={item.name}
               className={`nav-item ${activePage === item.name ? "active" : ""}`}
-              onClick={() => setActivePage(item.name)}
+              onClick={() => handlePageChange(item.name)}
             >
               <span className="nav-icon">{item.icon}</span>
               {item.name}
               {item.name === "Documents" && (
                 <span className="nav-count">{documents.length}</span>
+              )}
+              {item.name === "Shared with me" && (
+                <span className="nav-count">{sharedDocuments.length}</span>
               )}
             </button>
           ))}
@@ -335,9 +385,12 @@ async function revokeAccess(user) {
               <p className="page-description">
                 {activePage === "Documents"
                   ? "Organize, find, and securely manage your documents."
-                  : `Your ${activePage.toLowerCase()} workspace.`}
+                  : activePage === "Shared with me"
+                    ? "Documents other users have shared with your account."
+                    : `Your ${activePage.toLowerCase()} workspace.`}
               </p>
             </div>
+
             {activePage === "Documents" && (
               <button className="primary-button" onClick={() => {
                 setError("");
@@ -422,9 +475,6 @@ async function revokeAccess(user) {
                       {loading ? (
                         <tr><td colSpan="6" className="empty-state">Loading documents...</td></tr>
                       ) : filteredDocuments.map((doc) => {
-                        const date = doc.uploadedAt
-                          ? new Date(doc.uploadedAt).toLocaleDateString()
-                          : "—";
                         const extension = doc.name?.toLowerCase().endsWith(".pdf") ? "PDF" : "FILE";
 
                         return (
@@ -439,19 +489,19 @@ async function revokeAccess(user) {
                               </div>
                             </td>
                             <td><span className="category-pill">{doc.category}</span></td>
-                            <td><div className="owner-cell"><span>{(doc.owner || "?").charAt(0).toUpperCase()}</span>{doc.owner}</div></td>
-                            <td className="date-cell">{date}</td>
                             <td>
-  <span className="access-pill"><span /> Authorized</span>
-</td>
-<td>
-  <button
-    className="filter-button"
-    onClick={() => openSharing(doc)}
-  >
-    Manage access
-  </button>
-</td>
+                              <div className="owner-cell">
+                                <span>{(doc.owner || "?").charAt(0).toUpperCase()}</span>
+                                {doc.owner}
+                              </div>
+                            </td>
+                            <td className="date-cell">{formatDate(doc.uploadedAt)}</td>
+                            <td><span className="access-pill"><span /> Authorized</span></td>
+                            <td>
+                              <button className="filter-button" onClick={() => openSharing(doc)}>
+                                Manage access
+                              </button>
+                            </td>
                           </tr>
                         );
                       })}
@@ -474,13 +524,105 @@ async function revokeAccess(user) {
                 </div>
               </section>
             </>
+          ) : activePage === "Shared with me" ? (
+            <section className="documents-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Shared documents</h2>
+                  <p>Documents shared with {authenticatedUser}</p>
+                </div>
+                <button
+                  className="filter-button"
+                  disabled={sharedLoading}
+                  onClick={() => loadSharedDocuments(authenticatedUser, password)}
+                >
+                  {sharedLoading ? "Refreshing..." : "↻ Refresh"}
+                </button>
+              </div>
+
+              <div className="table-toolbar">
+                <div className="search-box">
+                  <span>⌕</span>
+                  <input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search shared documents..."
+                    aria-label="Search shared documents"
+                  />
+                </div>
+                <span className="results-count">
+                  {filteredSharedDocuments.length} documents
+                </span>
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>DOCUMENT NAME</th>
+                      <th>CATEGORY</th>
+                      <th>OWNER</th>
+                      <th>DATE ADDED</th>
+                      <th>YOUR PERMISSION</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sharedLoading ? (
+                      <tr>
+                        <td colSpan="5" className="empty-state">
+                          Loading shared documents...
+                        </td>
+                      </tr>
+                    ) : filteredSharedDocuments.map((doc) => (
+                      <tr key={doc.id}>
+                        <td>
+                          <div className="document-cell">
+                            <div className="file-icon">FILE</div>
+                            <div>
+                              <strong>{doc.name}</strong>
+                              <span>Document ID: {doc.id}</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td><span className="category-pill">{doc.category}</span></td>
+                        <td>
+                          <div className="owner-cell">
+                            <span>{(doc.owner || "?").charAt(0).toUpperCase()}</span>
+                            {doc.owner}
+                          </div>
+                        </td>
+                        <td className="date-cell">{formatDate(doc.uploadedAt)}</td>
+                        <td>
+                          <span className="category-pill">
+                            {doc.permission || "READ"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {!sharedLoading && filteredSharedDocuments.length === 0 && (
+                      <tr>
+                        <td colSpan="5" className="empty-state">
+                          {sharedDocuments.length === 0
+                            ? "No documents have been shared with you yet."
+                            : "No matching documents. Try another search."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="panel-footer">
+                <span>
+                  Showing {filteredSharedDocuments.length} of {sharedDocuments.length} shared documents
+                </span>
+                <span className="footer-lock">♧ Access-controlled documents</span>
+              </div>
+            </section>
           ) : (
             <section className="documents-panel placeholder-panel">
               <h2>{activePage}</h2>
-              <p>This section's backend integration is not implemented yet. We'll connect it next.</p>
-              {activePage === "Shared with me" && (
-                <p>Document sharing is currently managed through the existing permissions API.</p>
-              )}
+              <p>This section's backend integration is not implemented yet.</p>
             </section>
           )}
 
@@ -542,14 +684,12 @@ async function revokeAccess(user) {
           </form>
         </div>
       )}
-       {selectedDoc && (
+
+      {selectedDoc && (
         <div
           className="modal-backdrop"
           onClick={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              !sharingLoading
-            ) {
+            if (event.target === event.currentTarget && !sharingLoading) {
               setSelectedDoc(null);
             }
           }}
@@ -565,9 +705,7 @@ async function revokeAccess(user) {
                 className="modal-close"
                 disabled={sharingLoading}
                 onClick={() => setSelectedDoc(null)}
-              >
-                ×
-              </button>
+              >×</button>
             </div>
 
             <form onSubmit={grantAccess}>
@@ -575,9 +713,7 @@ async function revokeAccess(user) {
               <input
                 id="shareUsername"
                 value={targetUsername}
-                onChange={(event) =>
-                  setTargetUsername(event.target.value)
-                }
+                onChange={(event) => setTargetUsername(event.target.value)}
                 placeholder="Enter an existing username"
                 maxLength={100}
                 required
@@ -587,19 +723,14 @@ async function revokeAccess(user) {
               <select
                 id="sharePermission"
                 value={permissionLevel}
-                onChange={(event) =>
-                  setPermissionLevel(event.target.value)
-                }
+                onChange={(event) => setPermissionLevel(event.target.value)}
               >
                 <option value="READ">READ — View document</option>
                 <option value="EDIT">EDIT — Edit access</option>
               </select>
 
               <div className="modal-actions">
-                <button
-                  className="primary-button"
-                  disabled={sharingLoading}
-                >
+                <button className="primary-button" disabled={sharingLoading}>
                   {sharingLoading ? "Please wait..." : "Grant access"}
                 </button>
               </div>
@@ -614,10 +745,7 @@ async function revokeAccess(user) {
                 <p>No users have been granted access yet.</p>
               ) : (
                 permissions.map((item) => (
-                  <div
-                    className="sharing-user"
-                    key={item.username}
-                  >
+                  <div className="sharing-user" key={item.username}>
                     <div>
                       <strong>{item.username}</strong>
                       <p>
@@ -627,7 +755,6 @@ async function revokeAccess(user) {
                           : "Date unavailable"}
                       </p>
                     </div>
-
                     <button
                       type="button"
                       className="filter-button"
@@ -643,7 +770,6 @@ async function revokeAccess(user) {
           </section>
         </div>
       )}
-
     </div>
   );
 }

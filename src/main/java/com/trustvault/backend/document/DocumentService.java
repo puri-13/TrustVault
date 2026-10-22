@@ -1,6 +1,7 @@
 
 package com.trustvault.backend.document;
 
+import com.trustvault.backend.audit.AuditService;
 import com.trustvault.backend.user.AppUser;
 import com.trustvault.backend.user.AppUserRepository;
 import org.springframework.security.core.Authentication;
@@ -10,11 +11,13 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
-import com.trustvault.backend.audit.AuditService;
+
 @Service
 public class DocumentService {
 
@@ -23,18 +26,20 @@ public class DocumentService {
     private final FileStorageService fileStorageService;
     private final DocumentPermissionRepository permissionRepository;
     private final AuditService auditService;
+
     public DocumentService(
-        DocumentRepository documentRepository,
-        AppUserRepository appUserRepository,
-        FileStorageService fileStorageService,
-        DocumentPermissionRepository permissionRepository,
-        AuditService auditService) {
-    this.documentRepository = documentRepository;
-    this.appUserRepository = appUserRepository;
-    this.fileStorageService = fileStorageService;
-    this.permissionRepository = permissionRepository;
-    this.auditService = auditService;
-}
+            DocumentRepository documentRepository,
+            AppUserRepository appUserRepository,
+            FileStorageService fileStorageService,
+            DocumentPermissionRepository permissionRepository,
+            AuditService auditService) {
+
+        this.documentRepository = documentRepository;
+        this.appUserRepository = appUserRepository;
+        this.fileStorageService = fileStorageService;
+        this.permissionRepository = permissionRepository;
+        this.auditService = auditService;
+    }
 
     @Transactional
     public Document uploadDocument(
@@ -51,12 +56,14 @@ public class DocumentService {
 
         if (name == null || name.isBlank()
                 || name.trim().length() > 200) {
-            throw new IllegalArgumentException("Invalid document name");
+            throw new IllegalArgumentException(
+                    "Invalid document name");
         }
 
         if (category == null || category.isBlank()
                 || category.trim().length() > 100) {
-            throw new IllegalArgumentException("Invalid document category");
+            throw new IllegalArgumentException(
+                    "Invalid document category");
         }
 
         String storedName = fileStorageService.store(file);
@@ -69,15 +76,19 @@ public class DocumentService {
             document.setOwner(owner);
             document.setUploadedAt(LocalDateTime.now());
 
-            Document savedDocument = documentRepository.save(document);
+            Document savedDocument =
+                    documentRepository.save(document);
 
-auditService.record(
-        owner.getUsername(),
-        "DOCUMENT_UPLOAD",
-        "Uploaded document ID " + savedDocument.getId()
-                + ", category " + savedDocument.getCategory());
+            auditService.record(
+                    owner.getUsername(),
+                    "DOCUMENT_UPLOAD",
+                    "Uploaded document ID "
+                            + savedDocument.getId()
+                            + ", category "
+                            + savedDocument.getCategory());
 
-return savedDocument;
+            return savedDocument;
+
         } catch (RuntimeException ex) {
             fileStorageService.deleteStoredFile(storedName);
             throw ex;
@@ -91,37 +102,96 @@ return savedDocument;
     }
 
     @Transactional(readOnly = true)
+    public List<DocumentPermission> getSharedWithMe() {
+        AppUser user = getAuthenticatedUser();
+        return permissionRepository.findByUser_Id(user.getId());
+    }
+
+    @Transactional(readOnly = true)
     public Document getMyDocumentById(Long documentId) {
         AppUser user = getAuthenticatedUser();
 
         Document document = documentRepository.findById(documentId)
                 .orElseThrow(() ->
-                        new NoSuchElementException("Document not found"));
+                        new NoSuchElementException(
+                                "Document not found"));
 
-        // Owners can access their own documents.
+        // The owner can access their own document.
         if (document.getOwner().getId().equals(user.getId())) {
             return document;
         }
 
         // Other users must have READ or EDIT permission.
         DocumentPermission permission = permissionRepository
-                .findByDocument_IdAndUser_Id(documentId, user.getId())
+                .findByDocument_IdAndUser_Id(
+                        documentId, user.getId())
                 .orElseThrow(() ->
-                        new NoSuchElementException("Document not found"));
+                        new NoSuchElementException(
+                                "Document not found"));
 
         String access = permission.getPermission()
                 .toUpperCase(Locale.ROOT);
 
         if (!access.equals("READ") && !access.equals("EDIT")) {
-            throw new NoSuchElementException("Document not found");
+            throw new NoSuchElementException(
+                    "Document not found");
         }
 
         return document;
     }
 
+    /**
+     * Downloads a document only after checking the user's access.
+     * The stored file path is never supplied by the client.
+     */
+    @Transactional
+    public DownloadedDocument downloadDocument(Long documentId)
+            throws IOException {
+
+        // Verify document ownership or READ/EDIT permission.
+        Document document = getMyDocumentById(documentId);
+        AppUser user = getAuthenticatedUser();
+
+        Path filePath = fileStorageService.getStoredFile(
+                document.getStoragePath());
+
+        byte[] content = Files.readAllBytes(filePath);
+
+        // Record successful downloads.
+        auditService.record(
+                user.getUsername(),
+                "DOCUMENT_DOWNLOAD",
+                "Downloaded document ID " + document.getId());
+
+        // Use the stored file's extension in the download filename.
+        String downloadFilename = document.getName();
+        String storedFilename = filePath.getFileName().toString();
+
+        int extensionIndex = storedFilename.lastIndexOf('.');
+
+        if (extensionIndex > 0
+                && extensionIndex < storedFilename.length() - 1) {
+
+            String extension =
+                    storedFilename.substring(extensionIndex);
+
+            downloadFilename += extension;
+        }
+
+        return new DownloadedDocument(
+                downloadFilename,
+                content);
+    }
+
+    public record DownloadedDocument(
+            String filename,
+            byte[] content) {
+    }
+
     private AppUser getAuthenticatedUser() {
         Authentication authentication =
-                SecurityContextHolder.getContext().getAuthentication();
+                SecurityContextHolder.getContext()
+                        .getAuthentication();
 
         String username = authentication.getName();
 
