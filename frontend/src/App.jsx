@@ -1,11 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+
+function apiUrl(path) {
+  return `${API_BASE_URL}${path}`;
+}
+
+function basicAuthorization(username, password) {
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+  return `Basic ${btoa(binary)}`;
+}
+
 async function apiRequest(path, username, password, options = {}) {
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", `Basic ${btoa(`${username}:${password}`)}`);
+  headers.set("Authorization", basicAuthorization(username, password));
 
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(apiUrl(path), { ...options, headers });
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -20,7 +32,6 @@ async function apiRequest(path, username, password, options = {}) {
 
     throw new Error(
       body.error ||
-        body.message ||
         `Request failed (${response.status}).`
     );
   }
@@ -39,6 +50,7 @@ function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authenticatedUser, setAuthenticatedUser] = useState(null);
+  const [authenticatedRole, setAuthenticatedRole] = useState(null);
 
   // Authentication and registration state
   const [showRegistration, setShowRegistration] = useState(false);
@@ -71,13 +83,7 @@ function App() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditUnavailable, setAuditUnavailable] = useState(false);
 
-  // Temporary display check for the existing demo account.
-  // The backend remains responsible for enforcing permissions.
-  const isViewer =
-    typeof authenticatedUser === "string" &&
-    authenticatedUser.toLowerCase() === "viewer1";
-
-  const canUpload = Boolean(authenticatedUser) && !isViewer;
+  const canUpload = authenticatedRole === "OWNER";
 
   const loadDocuments = useCallback(async (user, pass) => {
     setLoading(true);
@@ -85,13 +91,16 @@ function App() {
 
     try {
       const data = await apiRequest("/api/documents", user, pass);
+      const currentUser = await apiRequest("/api/auth/me", user, pass);
 
       setDocuments(Array.isArray(data) ? data : []);
-      setAuthenticatedUser(user);
+      setAuthenticatedUser(currentUser.username);
+      setAuthenticatedRole(currentUser.role);
       setPassword(pass);
     } catch (err) {
       setError(err.message);
       setAuthenticatedUser(null);
+      setAuthenticatedRole(null);
       setPassword("");
     } finally {
       setLoading(false);
@@ -182,7 +191,7 @@ function App() {
     setRegistering(true);
 
     try {
-      const response = await fetch("/api/auth/register", {
+      const response = await fetch(apiUrl("/api/auth/register"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -205,13 +214,9 @@ function App() {
 
         if (
           response.status === 400 &&
-          (body.error || body.message || validationMessage)
+          (body.error || validationMessage)
         ) {
-          throw new Error(
-            body.error ||
-              body.message ||
-              validationMessage
-          );
+          throw new Error(body.error || validationMessage);
         }
 
         if (response.status === 409) {
@@ -222,8 +227,6 @@ function App() {
 
         throw new Error(
           body.error ||
-            body.message ||
-            body.detail ||
             validationMessage ||
             `Registration failed (${response.status}). Please try again.`
         );
@@ -248,6 +251,7 @@ function App() {
 
   function handleLogout() {
     setAuthenticatedUser(null);
+    setAuthenticatedRole(null);
     setPassword("");
     setUsername("");
     setDocuments([]);
@@ -324,6 +328,46 @@ function App() {
       setError(err.message);
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function downloadDocument(doc) {
+    setError("");
+
+    try {
+      const response = await fetch(apiUrl(`/api/documents/${doc.id}/download`), {
+        headers: {
+          Authorization: basicAuthorization(authenticatedUser, password),
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Invalid username or password, or session expired.");
+        }
+        if (response.status === 403) {
+          throw new Error("You don't have permission to download this document.");
+        }
+        if (response.status === 404) {
+          throw new Error("Document not found or access has been revoked.");
+        }
+        throw new Error(`Download failed (${response.status}).`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const filename = response.headers
+        .get("Content-Disposition")
+        ?.match(/filename="([^"]+)"/i)?.[1];
+      link.href = objectUrl;
+      link.download = filename || doc.name || "document";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (err) {
+      setError(err.message || "Unable to download this document.");
     }
   }
 
@@ -926,13 +970,14 @@ function App() {
                         <th>DATE ADDED</th>
                         <th>ACCESS</th>
                         <th>SHARING</th>
+                        <th>DOWNLOAD</th>
                       </tr>
                     </thead>
 
                     <tbody>
                       {loading ? (
                         <tr>
-                          <td colSpan="6" className="empty-state">
+                          <td colSpan="7" className="empty-state">
                             Loading documents...
                           </td>
                         </tr>
@@ -997,6 +1042,15 @@ function App() {
                                   Manage access
                                 </button>
                               </td>
+
+                              <td>
+                                <button
+                                  className="filter-button"
+                                  onClick={() => downloadDocument(doc)}
+                                >
+                                  Download
+                                </button>
+                              </td>
                             </tr>
                           );
                         })
@@ -1004,7 +1058,7 @@ function App() {
 
                       {!loading && filteredDocuments.length === 0 && (
                         <tr>
-                          <td colSpan="6" className="empty-state">
+                          <td colSpan="7" className="empty-state">
                             {documents.length === 0
                               ? "No documents found for this account. Upload a file to get started."
                               : "No matching documents. Try another search."}
@@ -1076,13 +1130,14 @@ function App() {
                       <th>OWNER</th>
                       <th>DATE ADDED</th>
                       <th>YOUR PERMISSION</th>
+                      <th>DOWNLOAD</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     {sharedLoading ? (
                       <tr>
-                        <td colSpan="5" className="empty-state">
+                        <td colSpan="6" className="empty-state">
                           Loading shared documents...
                         </td>
                       </tr>
@@ -1127,6 +1182,15 @@ function App() {
                               {doc.permission || "READ"}
                             </span>
                           </td>
+
+                          <td>
+                            <button
+                              className="filter-button"
+                              onClick={() => downloadDocument(doc)}
+                            >
+                              Download
+                            </button>
+                          </td>
                         </tr>
                       ))
                     )}
@@ -1134,7 +1198,7 @@ function App() {
                     {!sharedLoading &&
                       filteredSharedDocuments.length === 0 && (
                         <tr>
-                          <td colSpan="5" className="empty-state">
+                          <td colSpan="6" className="empty-state">
                             {sharedDocuments.length === 0
                               ? "No documents have been shared with you yet."
                               : "No matching documents. Try another search."}

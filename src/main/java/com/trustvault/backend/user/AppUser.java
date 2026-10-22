@@ -6,9 +6,14 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 @Entity
-@Table(name = "app_users")
+@Table(
+    name = "app_users",
+    uniqueConstraints = @UniqueConstraint(
+        name = "uk_app_users_username",
+        columnNames = "username"))
 public class AppUser {
 
     @Id

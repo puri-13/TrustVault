@@ -2,6 +2,7 @@
 package com.trustvault.backend.user;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -39,7 +40,7 @@ public class UserService {
         String normalizedUsername = username.trim();
 
         if (appUserRepository.existsByUsername(normalizedUsername)) {
-            throw new IllegalArgumentException("Username already exists");
+            throw new DuplicateUsernameException("Username already exists");
         }
 
         AppUser user = new AppUser();
@@ -47,6 +48,14 @@ public class UserService {
         user.setPassword(passwordEncoder.encode(password));
         user.setRole(role.name());
 
-        return appUserRepository.save(user);
+        try {
+            return appUserRepository.save(user);
+        } catch (DataIntegrityViolationException ex) {
+            if (appUserRepository.existsByUsername(normalizedUsername)) {
+                throw new DuplicateUsernameException(
+                        "Username already exists", ex);
+            }
+            throw ex;
+        }
     }
 }

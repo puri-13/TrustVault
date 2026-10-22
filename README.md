@@ -2,7 +2,7 @@
 
 TrustVault is a document-management application built to demonstrate authenticated access, document ownership, controlled sharing, file upload/download, and audit logging.
 
-> **Project status:** Features described below are based on the current implementation and manual tests performed during development. Review the checklist and replace any placeholder values before submitting. Do not describe the application as production-secure or deployed unless you have verified that.
+> **Project status:** The backend and frontend build locally. Automated tests currently use an isolated H2 database. No production backend, database, or persistent file store is configured or deployed by this repository.
 
 ## Features
 
@@ -13,10 +13,10 @@ TrustVault is a document-management application built to demonstrate authenticat
 - Owners can grant and revoke document permissions.
 - Shared users can access documents according to their `READ` or `EDIT` permission.
 - Authorized users can download stored files.
-- Server-side file storage uses generated stored filenames rather than trusting a client-provided path.
+- Server-side file storage uses generated stored filenames rather than trusting a client-provided path; allowed file types are checked by extension, not by inspecting file contents.
 - Audit events are recorded for implemented actions such as uploads and successful downloads.
 - Administrator-only audit endpoint protected by role authorization.
-- React frontend built with Vite.
+- React frontend built with Vite, configurable backend base URL, and document download actions.
 
 ## Technology stack
 
@@ -70,7 +70,7 @@ In MySQL, run:
 CREATE DATABASE trustvault;
 ```
 
-The application is configured to use the `trustvault` database. Check `src/main/resources/application.properties` for the exact JDBC URL and other settings.
+The local profile defaults to `jdbc:mysql://localhost:3306/trustvault`. Override it with `DB_URL` if needed. Schema update is enabled for local development only.
 
 ### 3. Configure database credentials
 
@@ -83,11 +83,11 @@ $env:DB_PASSWORD = [System.Net.NetworkCredential]::new("", $secure).Password
 Remove-Variable secure
 ```
 
-Use the MySQL account appropriate for your local setup. Never commit passwords or put real credentials in this README.
+Use a least-privilege MySQL account where possible. Never commit passwords or put real credentials in this README.
 
 ### 4. Start the backend
 
-From the repository root (the folder containing `pom.xml`):
+From the repository root (the folder containing `pom.xml`), in PowerShell:
 
 ```powershell
 mvn test
@@ -98,15 +98,17 @@ The local backend is configured for port `8081`. Keep this terminal open while u
 
 ### 5. Start the frontend
 
-Open a second terminal:
+Open a second PowerShell terminal:
 
 ```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
 Open the local URL printed by Vite in the terminal. The port can vary if the default port is already in use.
+
+With no `VITE_API_BASE_URL` set, local frontend requests use relative `/api` paths and Vite forwards them to `http://localhost:8081`.
 
 ## API overview
 
@@ -114,46 +116,48 @@ The following routes are present in the current implementation. Confirm the exac
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/api/auth/register` | Register an allowed non-admin user |
-| `GET` | `/api/documents` | List the authenticated user's documents |
-| `POST` | `/api/documents` | Upload a document |
-| `GET` | `/api/documents/{id}` | Read document metadata if authorized |
-| `GET` | `/api/documents/{id}/download` | Download a document if authorized |
+| `GET` | `/api/health` or `/api/health/live` | Public process liveness; does not check database or file storage |
+| `GET` | `/api/health/ready` | Public readiness probe; checks `SELECT 1` and storage-directory writability; returns only `UP`/`DOWN` statuses |
+| `POST` | `/api/auth/register` | Public registration; always creates an `OWNER` |
+| `GET` | `/api/auth/me` | Return the authenticated username and server-assigned role |
+| `GET` | `/api/documents` | List documents owned by the authenticated user |
+| `POST` | `/api/documents` | Upload multipart fields `name`, `category`, and `file`; requires `OWNER` |
+| `GET` | `/api/documents/{id}` | Read document metadata if owner or shared with `READ`/`EDIT` |
+| `GET` | `/api/documents/{id}/download` | Download if owner or shared with `READ`/`EDIT` |
 | `GET` | `/api/documents/shared-with-me` | List documents shared with the authenticated user |
-| `POST` | `/api/documents/{id}/permissions` | Grant a document permission |
-| `GET` | `/api/documents/{id}/permissions` | List permissions for an owned document |
-| `DELETE` | `/api/documents/{id}/permissions?username={username}` | Revoke a permission |
+| `POST` | `/api/documents/{id}/permissions` | Grant `READ` or `EDIT`; owner only; JSON `username`, `permission` |
+| `GET` | `/api/documents/{id}/permissions` | List permissions; owner only |
+| `DELETE` | `/api/documents/{id}/permissions?username={username}` | Revoke permission; owner only |
 | `GET` | `/api/audit` | Read audit events; requires the `ADMIN` role |
 
-Most endpoints require HTTP Basic authentication. The registration endpoint is public, but registration must not permit callers to assign themselves the `ADMIN` role.
+All protected endpoints use HTTP Basic authentication on each request. The health and registration endpoints are public. Inaccessible document resources return `404` to avoid confirming their existence.
 
 ## Security notes
 
 - The backend checks ownership or permission before returning document metadata and file content.
 - The backend returns `404 Not Found` for inaccessible documents in the tested cases, avoiding disclosure of whether another user's document exists.
 - Passwords are encoded using BCrypt.
-- File uploads have configured size limits; check the storage service for its full validation rules.
+- File uploads are limited to 10 MB and extensions PDF, TXT, PNG, JPG, JPEG, and DOCX. PDF, PNG, and JPEG signatures are checked; TXT must be valid UTF-8 without null bytes; DOCX is checked for required package entries with expanded-size and entry-count limits. The client-provided MIME type is not trusted. These checks do not scan for malware or fully parse every format.
+- Public registration is limited in memory to 10 requests per client address per 15 minutes by default. Configure `REGISTRATION_RATE_LIMIT_MAX_ATTEMPTS` and `REGISTRATION_RATE_LIMIT_WINDOW_SECONDS` to change these values. Limits are per process and reset on restart; multiple instances do not share a counter. Behind a reverse proxy, `getRemoteAddr()` may identify the proxy rather than the user. Configure trusted proxy address forwarding at the hosting/container layer before relying on per-client limits; the app does not trust arbitrary `X-Forwarded-For` headers.
 - Keep database credentials outside source control.
 - Local filesystem storage is suitable for a demonstration, but production deployment needs carefully configured persistent storage, backups, access controls, and operational monitoring.
-- HTTP Basic authentication should only be used over HTTPS outside a local development environment.
+- HTTP Basic authentication is only appropriate over HTTPS outside local development. CORS is restricted to configured origins and does not replace authentication.
+- The UI temporarily keeps the Basic-auth username/password in React memory for API calls; it does not persist credentials to browser storage.
 - Review `THREATS.md` for known risks and mitigations.
 
-## Tests and manual verification
+## Automated tests
 
-During development, the following manual checks were observed to succeed:
+Run the complete backend test suite from the repository root:
 
-- An owner downloaded a document and received HTTP `200`.
-- A user with `READ` permission accessed and downloaded the shared document.
-- A user without permission received `404` for that document.
-- An owner revoked the user's permission; subsequent access returned `404`.
-- A non-admin user received `403` from `/api/audit`.
-- `mvn test` reported `BUILD SUCCESS` after database credentials were set in the test terminal.
+```powershell
+.\mvnw.cmd test
+```
 
-These are development checks, not proof of complete security. Run the tests again on the final code and add automated tests for authorization, upload validation, permission revocation, and audit access.
+The suite currently has 20 tests: 7 Spring MVC/JPA integration tests using an in-memory H2 database and isolated `target/trustvault-test-storage`, plus 13 unit tests for registration, rate limiting, readiness, and file validation. The last run during this review passed with 0 failures and 0 errors. It covers registration validation/duplicates/password hashing and role assignment, authentication and current-user role reporting, username uniqueness, ownership, permission grant/revoke, READ download access and post-revocation denial, file signatures and spoofed MIME types, invalid/oversized uploads, rate limiting, CORS preflight, health/readiness, and admin-only audit access. It does not prove production database compatibility or persistent storage behavior.
 
 ## Project checklist before submission
 
-- [ ] Run `mvn test` and confirm `BUILD SUCCESS`.
+- [ ] Run `.\mvnw.cmd test` and confirm `BUILD SUCCESS`.
 - [ ] Run `npm install` and `npm run build` inside `frontend`.
 - [ ] Start backend and frontend from clean terminals and test the demo.
 - [ ] Test upload, download, sharing, revocation, and unauthorized access.
@@ -164,7 +168,33 @@ These are development checks, not proof of complete security. Run the tests agai
 
 ## Deployment
 
-**Demo URL:** _Add the real deployed URL after deployment and testing._
+No production backend URL is configured. Do not set a placeholder as the production API URL.
+
+### Required environment variables
+
+For the backend, configure these in the hosting provider without committing their values:
+
+- `SPRING_PROFILES_ACTIVE=prod`
+- `DB_URL`: hosted MySQL JDBC URL, for example the provider's `jdbc:mysql://...` endpoint
+- `DB_USERNAME` and `DB_PASSWORD`: a least-privilege database account
+- `TRUSTVAULT_CORS_ALLOWED_ORIGINS`: exact deployed frontend origin(s), comma-separated, such as `https://your-app.vercel.app`; do not include a path
+- `TRUSTVAULT_STORAGE_DIR`: path on a persistent mounted volume
+- `PORT`: optional; defaults to `8081`
+- `REGISTRATION_RATE_LIMIT_MAX_ATTEMPTS` and `REGISTRATION_RATE_LIMIT_WINDOW_SECONDS`: optional in-memory registration limit settings; defaults are 10 attempts and 900 seconds
+
+For Vercel, set `VITE_API_BASE_URL` to the deployed backend origin (scheme and host only, with no `/api` suffix), then redeploy. This URL is public configuration, not a secret. The project does not contain a backend provider URL or credentials.
+
+### Deployment sequence
+
+1. Provision hosted MySQL and a persistent volume for the backend. This application stores files on local disk; an ephemeral container filesystem is not sufficient. Configure the host's readiness probe to call `/api/health/ready` and its liveness probe to call `/api/health/live` (or retain `/api/health` for compatibility).
+2. Review the current entity/schema against the hosted database and apply a reviewed migration manually. Ensure the `app_users.username` column has the unique constraint `uk_app_users_username`; first check for existing duplicate usernames. No migration tool is configured. Production uses `ddl-auto=validate` and will not create or update tables.
+3. Configure the backend variables above, restrict database network access, enable HTTPS, deploy, and check `GET /api/health`. This liveness endpoint does not verify DB connectivity or file-volume writability.
+4. Set Vercel `VITE_API_BASE_URL` and configure the backend CORS origin to the exact Vercel/custom frontend origin. Redeploy the frontend and verify registration, login, upload, share/revoke, and download against the deployed services.
+5. Confirm backups and restore procedures for both MySQL and stored files. No deployment or live end-to-end check has been performed in this repository review.
+
+Local `application.properties` retains `ddl-auto=update` for development. Avoid running the production profile until a production database and storage directory are intentionally provisioned.
+
+**Demo URL:** Add the verified URL only after deployment and end-to-end testing.
 
 **Repository:** https://github.com/puri-13/TrustVault
 

@@ -7,17 +7,25 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 @Service
 public class FileStorageService {
 
     private static final long MAX_FILE_SIZE = 10L * 1024 * 1024;
+    private static final long MAX_DOCX_EXPANDED_SIZE = 50L * 1024 * 1024;
+    private static final int MAX_DOCX_ENTRIES = 1000;
 
     private static final Set<String> ALLOWED_EXTENSIONS =
             Set.of("pdf", "txt", "png", "jpg", "jpeg", "docx");
@@ -72,6 +80,8 @@ public class FileStorageService {
                     "Allowed types: PDF, TXT, PNG, JPG, JPEG, DOCX");
         }
 
+        validateContent(file, extension);
+
         String storedName = UUID.randomUUID() + "." + extension;
 
         Path destination = storageDirectory.resolve(storedName)
@@ -90,6 +100,97 @@ public class FileStorageService {
         }
 
         return storedName;
+    }
+
+    public boolean isStorageReady() {
+        return Files.isDirectory(storageDirectory)
+                && Files.isWritable(storageDirectory);
+    }
+
+    private void validateContent(MultipartFile file, String extension)
+            throws IOException {
+        switch (extension) {
+            case "pdf" -> requireSignature(file, new byte[] {'%', 'P', 'D', 'F', '-'});
+            case "png" -> requireSignature(file, new byte[] {
+                    (byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A});
+            case "jpg", "jpeg" -> requireSignature(file, new byte[] {
+                    (byte) 0xFF, (byte) 0xD8, (byte) 0xFF});
+            case "txt" -> validateText(file);
+            case "docx" -> validateDocx(file);
+            default -> throw new IllegalArgumentException(
+                    "File content type is not supported");
+        }
+    }
+
+    private void requireSignature(MultipartFile file, byte[] expected)
+            throws IOException {
+        try (InputStream input = file.getInputStream()) {
+            byte[] actual = input.readNBytes(expected.length);
+            if (!java.util.Arrays.equals(actual, expected)) {
+                throw new IllegalArgumentException(
+                        "File content does not match its filename extension");
+            }
+        }
+    }
+
+    private void validateText(MultipartFile file) throws IOException {
+        byte[] content = file.getBytes();
+        try {
+            StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(content));
+        } catch (CharacterCodingException ex) {
+            throw new IllegalArgumentException(
+                    "Text files must contain valid UTF-8 text");
+        }
+
+        for (byte value : content) {
+            if (value == 0) {
+                throw new IllegalArgumentException(
+                        "Text files must not contain binary data");
+            }
+        }
+    }
+
+    private void validateDocx(MultipartFile file) throws IOException {
+        boolean hasContentTypes = false;
+        boolean hasDocument = false;
+        int entryCount = 0;
+        long expandedSize = 0;
+        byte[] buffer = new byte[8192];
+
+        try (ZipInputStream zip = new ZipInputStream(file.getInputStream())) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                entryCount++;
+                if (entryCount > MAX_DOCX_ENTRIES) {
+                    throw invalidDocx();
+                }
+                hasContentTypes |= "[Content_Types].xml".equals(entry.getName());
+                hasDocument |= "word/document.xml".equals(entry.getName());
+
+                int bytesRead;
+                while ((bytesRead = zip.read(buffer)) != -1) {
+                    expandedSize += bytesRead;
+                    if (expandedSize > MAX_DOCX_EXPANDED_SIZE) {
+                        throw invalidDocx();
+                    }
+                }
+                zip.closeEntry();
+            }
+        } catch (java.util.zip.ZipException ex) {
+            throw invalidDocx();
+        }
+
+        if (!hasContentTypes || !hasDocument) {
+            throw invalidDocx();
+        }
+    }
+
+    private IllegalArgumentException invalidDocx() {
+        return new IllegalArgumentException(
+                "DOCX file is not a valid document package");
     }
 
     /**

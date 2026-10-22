@@ -2,6 +2,7 @@
 package com.trustvault.backend.user;
 
 import jakarta.validation.Valid;
+import org.springframework.security.core.Authentication;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -12,10 +13,24 @@ import java.util.Map;
 @RequestMapping("/api/auth")
 public class UserController {
 
+    public record CurrentUserResponse(String username, String role) {
+    }
+
     private final UserService userService;
 
     public UserController(UserService userService) {
         this.userService = userService;
+    }
+
+    @GetMapping("/me")
+    public CurrentUserResponse currentUser(Authentication authentication) {
+        String role = authentication.getAuthorities().stream()
+                .map(authority -> authority.getAuthority())
+                .filter(authority -> authority.startsWith("ROLE_"))
+                .map(authority -> authority.substring("ROLE_".length()))
+                .findFirst()
+                .orElse("UNKNOWN");
+        return new CurrentUserResponse(authentication.getName(), role);
     }
 
     @PostMapping("/register")
@@ -39,6 +54,10 @@ public class UserController {
                             "message", "Registration successful"
                     )
             );
+
+        } catch (DuplicateUsernameException ex) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(
+                    Map.of("error", "Username already exists"));
 
         } catch (IllegalArgumentException ex) {
             return ResponseEntity.badRequest().body(
