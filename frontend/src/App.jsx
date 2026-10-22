@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 
@@ -10,12 +9,15 @@ async function apiRequest(path, username, password, options = {}) {
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
+
     if (response.status === 401) {
       throw new Error("Invalid username or password, or session expired.");
     }
+
     if (response.status === 403) {
       throw new Error("You don't have permission to perform this action.");
     }
+
     throw new Error(body.error || `Request failed (${response.status}).`);
   }
 
@@ -24,22 +26,28 @@ async function apiRequest(path, username, password, options = {}) {
 }
 
 function formatDate(value) {
-  return value ? new Date(value).toLocaleDateString() : "—";
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
 }
 
 function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authenticatedUser, setAuthenticatedUser] = useState(null);
+
   const [documents, setDocuments] = useState([]);
   const [sharedDocuments, setSharedDocuments] = useState([]);
   const [search, setSearch] = useState("");
   const [activePage, setActivePage] = useState("Documents");
+
   const [loading, setLoading] = useState(false);
   const [sharedLoading, setSharedLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
   const [showUpload, setShowUpload] = useState(false);
   const [documentName, setDocumentName] = useState("");
   const [category, setCategory] = useState("General");
@@ -50,6 +58,18 @@ function App() {
   const [targetUsername, setTargetUsername] = useState("");
   const [permissionLevel, setPermissionLevel] = useState("READ");
   const [sharingLoading, setSharingLoading] = useState(false);
+
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditUnavailable, setAuditUnavailable] = useState(false);
+
+  // Temporary display check for the existing demo accounts.
+  // The backend remains responsible for enforcing permissions.
+  const isViewer =
+    typeof authenticatedUser === "string" &&
+    authenticatedUser.toLowerCase() === "viewer1";
+
+  const canUpload = Boolean(authenticatedUser) && !isViewer;
 
   const loadDocuments = useCallback(async (user, pass) => {
     setLoading(true);
@@ -88,12 +108,31 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    if (authenticatedUser) {
-      loadDocuments(authenticatedUser, password);
+  const loadAuditLogs = useCallback(async (user, pass) => {
+    setAuditLoading(true);
+    setAuditUnavailable(false);
+    setAuditLogs([]);
+    setError("");
+
+    try {
+      const data = await apiRequest("/api/audit", user, pass);
+      setAuditLogs(Array.isArray(data) ? data : []);
+    } catch (err) {
+      if (
+        err.message.toLowerCase().includes("permission") ||
+        err.message.includes("403")
+      ) {
+        setAuditUnavailable(true);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setAuditLoading(false);
     }
-    // Initial login is handled by handleLogin.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Login is handled by handleLogin.
   }, []);
 
   async function handleLogin(event) {
@@ -108,11 +147,18 @@ function App() {
     setUsername("");
     setDocuments([]);
     setSharedDocuments([]);
+    setAuditLogs([]);
     setSearch("");
     setError("");
     setSuccess("");
     setActivePage("Documents");
     setSelectedDoc(null);
+    setPermissions([]);
+    setAuditUnavailable(false);
+    setShowUpload(false);
+    setDocumentName("");
+    setCategory("General");
+    setFile(null);
   }
 
   async function handlePageChange(page) {
@@ -121,15 +167,25 @@ function App() {
     setError("");
     setSuccess("");
 
-    if (page === "Shared with me" && authenticatedUser) {
+    if (!authenticatedUser) return;
+
+    if (page === "Shared with me") {
       await loadSharedDocuments(authenticatedUser, password);
-    } else if (page === "Documents" && authenticatedUser) {
+    } else if (page === "Documents" || page === "Overview") {
       await loadDocuments(authenticatedUser, password);
+    } else if (page === "Activity logs") {
+      await loadAuditLogs(authenticatedUser, password);
     }
   }
 
   async function handleUpload(event) {
     event.preventDefault();
+
+    if (!canUpload) {
+      setError("Your account is not allowed to upload documents.");
+      setShowUpload(false);
+      return;
+    }
 
     if (!file) {
       setError("Please choose a file to upload.");
@@ -215,10 +271,11 @@ function App() {
         ...current.filter((item) => item.username !== result.username),
         result,
       ]);
-      setTargetUsername("");
-      setSuccess(`Access granted to ${result.username} (${result.permission}).`);
 
-      // Refresh the shared list so changes appear there too.
+      setTargetUsername("");
+      setSuccess(
+        `Access granted to ${result.username} (${result.permission}).`
+      );
       await loadSharedDocuments(authenticatedUser, password);
     } catch (err) {
       setError(err.message);
@@ -255,13 +312,13 @@ function App() {
   }
 
   const filteredDocuments = documents.filter((doc) =>
-    `${doc.name} ${doc.category} ${doc.owner}`
+    `${doc.name || ""} ${doc.category || ""} ${doc.owner || ""}`
       .toLowerCase()
       .includes(search.toLowerCase())
   );
 
   const filteredSharedDocuments = sharedDocuments.filter((doc) =>
-    `${doc.name} ${doc.category} ${doc.owner} ${doc.permission}`
+    `${doc.name || ""} ${doc.category || ""} ${doc.owner || ""} ${doc.permission || ""}`
       .toLowerCase()
       .includes(search.toLowerCase())
   );
@@ -311,7 +368,9 @@ function App() {
             {loading ? "Signing in..." : "Sign in securely →"}
           </button>
 
-          <div className="login-security">♧ Protected document workspace</div>
+          <div className="login-security">
+            ♧ Protected document workspace
+          </div>
         </form>
       </div>
     );
@@ -329,6 +388,7 @@ function App() {
         </div>
 
         <div className="workspace-label">WORKSPACE</div>
+
         <nav className="navigation">
           {menuItems.map((item) => (
             <button
@@ -353,15 +413,22 @@ function App() {
             <div className="security-symbol">✓</div>
             <strong>Your files, protected.</strong>
             <p>Access-controlled document storage.</p>
-            <div className="security-status"><span /> Authenticated workspace</div>
+            <div className="security-status">
+              <span /> Authenticated workspace
+            </div>
           </div>
+
           <div className="profile">
-            <div className="avatar">{authenticatedUser.charAt(0).toUpperCase()}</div>
+            <div className="avatar">
+              {authenticatedUser.charAt(0).toUpperCase()}
+            </div>
             <div className="profile-info">
               <strong>{authenticatedUser}</strong>
               <span>Signed in</span>
             </div>
-            <button className="logout-button" onClick={handleLogout}>Log out</button>
+            <button className="logout-button" onClick={handleLogout}>
+              Log out
+            </button>
           </div>
         </div>
       </aside>
@@ -372,8 +439,12 @@ function App() {
             Workspace <span>/</span> <strong>{activePage}</strong>
           </div>
           <div className="topbar-right">
-            <span className="secure-indicator"><span /> Secure workspace</span>
-            <div className="top-avatar">{authenticatedUser.charAt(0).toUpperCase()}</div>
+            <span className="secure-indicator">
+              <span /> Secure workspace
+            </span>
+            <div className="top-avatar">
+              {authenticatedUser.charAt(0).toUpperCase()}
+            </div>
           </div>
         </header>
 
@@ -383,20 +454,27 @@ function App() {
               <div className="eyebrow">YOUR PRIVATE WORKSPACE</div>
               <h1>{activePage}</h1>
               <p className="page-description">
-                {activePage === "Documents"
-                  ? "Organize, find, and securely manage your documents."
-                  : activePage === "Shared with me"
-                    ? "Documents other users have shared with your account."
-                    : `Your ${activePage.toLowerCase()} workspace.`}
+                {activePage === "Overview"
+                  ? "Your secure document workspace at a glance."
+                  : activePage === "Documents"
+                    ? "Organize, find, and securely manage your documents."
+                    : activePage === "Shared with me"
+                      ? "Documents other users have shared with your account."
+                      : activePage === "Activity logs"
+                        ? "Review recorded document and security activity."
+                        : "Manage your account and workspace security."}
               </p>
             </div>
 
-            {activePage === "Documents" && (
-              <button className="primary-button" onClick={() => {
-                setError("");
-                setSuccess("");
-                setShowUpload(true);
-              }}>
+            {activePage === "Documents" && canUpload && (
+              <button
+                className="primary-button"
+                onClick={() => {
+                  setError("");
+                  setSuccess("");
+                  setShowUpload(true);
+                }}
+              >
                 <span>＋</span> Upload document
               </button>
             )}
@@ -405,7 +483,7 @@ function App() {
           {error && <div className="message error-message">{error}</div>}
           {success && <div className="message success-message">{success}</div>}
 
-          {activePage === "Documents" ? (
+          {activePage === "Overview" && (
             <>
               <div className="stats-grid">
                 <div className="stat-card">
@@ -414,8 +492,134 @@ function App() {
                     <div className="stat-icon blue">▤</div>
                   </div>
                   <div className="stat-number">{documents.length}</div>
-                  <div className="stat-foot">Documents returned by the server</div>
+                  <div className="stat-foot">
+                    Documents owned by your account
+                  </div>
                 </div>
+
+                <div className="stat-card">
+                  <div className="stat-top">
+                    <span>Shared with me</span>
+                    <div className="stat-icon purple">⇄</div>
+                  </div>
+                  <div className="stat-number">{sharedDocuments.length}</div>
+                  <div className="stat-foot">
+                    Documents shared with your account
+                  </div>
+                </div>
+
+                <div className="stat-card">
+                  <div className="stat-top">
+                    <span>Signed in as</span>
+                    <div className="stat-icon green">✓</div>
+                  </div>
+                  <div className="stat-number stat-user">{authenticatedUser}</div>
+                  <div className="stat-foot">
+                    Authenticated workspace account
+                  </div>
+                </div>
+              </div>
+
+              <section className="documents-panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Recent documents</h2>
+                    <p>Your latest documents from the server.</p>
+                  </div>
+                  <button
+                    className="filter-button"
+                    onClick={() => handlePageChange("Documents")}
+                  >
+                    View all documents →
+                  </button>
+                </div>
+
+                {documents.length === 0 ? (
+                  <div className="empty-state">
+                    <h3>No documents yet</h3>
+                    <p>
+                      Upload a document to start using your secure workspace.
+                    </p>
+                    {canUpload && (
+                      <button
+                        className="primary-button"
+                        onClick={() => {
+                          setError("");
+                          setSuccess("");
+                          setActivePage("Documents");
+                          setShowUpload(true);
+                        }}
+                      >
+                        ＋ Upload document
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>DOCUMENT NAME</th>
+                          <th>CATEGORY</th>
+                          <th>DATE ADDED</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...documents]
+                          .sort(
+                            (a, b) =>
+                              new Date(b.uploadedAt || 0) -
+                              new Date(a.uploadedAt || 0)
+                          )
+                          .slice(0, 5)
+                          .map((doc) => (
+                            <tr key={doc.id}>
+                              <td>
+                                <div className="document-cell">
+                                  <div className="file-icon">FILE</div>
+                                  <div>
+                                    <strong>{doc.name}</strong>
+                                    <span>Document ID: {doc.id}</span>
+                                  </div>
+                                </div>
+                              </td>
+                              <td>
+                                <span className="category-pill">
+                                  {doc.category || "General"}
+                                </span>
+                              </td>
+                              <td className="date-cell">
+                                {formatDate(doc.uploadedAt)}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <div className="panel-footer">
+                  <span>{documents.length} total documents</span>
+                  <span className="footer-lock">♧ Protected workspace</span>
+                </div>
+              </section>
+            </>
+          )}
+
+          {activePage === "Documents" && (
+            <>
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <div className="stat-top">
+                    <span>My documents</span>
+                    <div className="stat-icon blue">▤</div>
+                  </div>
+                  <div className="stat-number">{documents.length}</div>
+                  <div className="stat-foot">
+                    Documents returned by the server
+                  </div>
+                </div>
+
                 <div className="stat-card">
                   <div className="stat-top">
                     <span>Search results</span>
@@ -424,13 +628,16 @@ function App() {
                   <div className="stat-number">{filteredDocuments.length}</div>
                   <div className="stat-foot">Matching your search</div>
                 </div>
+
                 <div className="stat-card">
                   <div className="stat-top">
                     <span>Signed in as</span>
                     <div className="stat-icon green">✓</div>
                   </div>
                   <div className="stat-number stat-user">{authenticatedUser}</div>
-                  <div className="stat-foot">Identity authenticated by the backend</div>
+                  <div className="stat-foot">
+                    Identity authenticated by the backend
+                  </div>
                 </div>
               </div>
 
@@ -440,10 +647,15 @@ function App() {
                     <h2>My documents</h2>
                     <p>Live data from your TrustVault backend</p>
                   </div>
-                  <button className="filter-button" onClick={() => {
-                    setSearch("");
-                    loadDocuments(authenticatedUser, password);
-                  }}>↻ Refresh</button>
+                  <button
+                    className="filter-button"
+                    onClick={() => {
+                      setSearch("");
+                      loadDocuments(authenticatedUser, password);
+                    }}
+                  >
+                    ↻ Refresh
+                  </button>
                 </div>
 
                 <div className="table-toolbar">
@@ -456,7 +668,9 @@ function App() {
                       aria-label="Search documents"
                     />
                   </div>
-                  <span className="results-count">{filteredDocuments.length} documents</span>
+                  <span className="results-count">
+                    {filteredDocuments.length} documents
+                  </span>
                 </div>
 
                 <div className="table-wrap">
@@ -473,38 +687,66 @@ function App() {
                     </thead>
                     <tbody>
                       {loading ? (
-                        <tr><td colSpan="6" className="empty-state">Loading documents...</td></tr>
-                      ) : filteredDocuments.map((doc) => {
-                        const extension = doc.name?.toLowerCase().endsWith(".pdf") ? "PDF" : "FILE";
+                        <tr>
+                          <td colSpan="6" className="empty-state">
+                            Loading documents...
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredDocuments.map((doc) => {
+                          const extension = doc.name
+                            ?.toLowerCase()
+                            .endsWith(".pdf")
+                            ? "PDF"
+                            : "FILE";
 
-                        return (
-                          <tr key={doc.id}>
-                            <td>
-                              <div className="document-cell">
-                                <div className={`file-icon ${extension.toLowerCase()}`}>{extension}</div>
-                                <div>
-                                  <strong>{doc.name}</strong>
-                                  <span>Document ID: {doc.id}</span>
+                          return (
+                            <tr key={doc.id}>
+                              <td>
+                                <div className="document-cell">
+                                  <div className={`file-icon ${extension.toLowerCase()}`}>
+                                    {extension}
+                                  </div>
+                                  <div>
+                                    <strong>{doc.name}</strong>
+                                    <span>Document ID: {doc.id}</span>
+                                  </div>
                                 </div>
-                              </div>
-                            </td>
-                            <td><span className="category-pill">{doc.category}</span></td>
-                            <td>
-                              <div className="owner-cell">
-                                <span>{(doc.owner || "?").charAt(0).toUpperCase()}</span>
-                                {doc.owner}
-                              </div>
-                            </td>
-                            <td className="date-cell">{formatDate(doc.uploadedAt)}</td>
-                            <td><span className="access-pill"><span /> Authorized</span></td>
-                            <td>
-                              <button className="filter-button" onClick={() => openSharing(doc)}>
-                                Manage access
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                              </td>
+                              <td>
+                                <span className="category-pill">
+                                  {doc.category || "General"}
+                                </span>
+                              </td>
+                              <td>
+                                <div className="owner-cell">
+                                  <span>
+                                    {(doc.owner || "?").charAt(0).toUpperCase()}
+                                  </span>
+                                  {doc.owner || "—"}
+                                </div>
+                              </td>
+                              <td className="date-cell">
+                                {formatDate(doc.uploadedAt)}
+                              </td>
+                              <td>
+                                <span className="access-pill">
+                                  <span /> Authorized
+                                </span>
+                              </td>
+                              <td>
+                                <button
+                                  className="filter-button"
+                                  onClick={() => openSharing(doc)}
+                                >
+                                  Manage access
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+
                       {!loading && filteredDocuments.length === 0 && (
                         <tr>
                           <td colSpan="6" className="empty-state">
@@ -519,12 +761,16 @@ function App() {
                 </div>
 
                 <div className="panel-footer">
-                  <span>Showing {filteredDocuments.length} of {documents.length} server documents</span>
+                  <span>
+                    Showing {filteredDocuments.length} of {documents.length} server documents
+                  </span>
                   <span className="footer-lock">♧ Protected workspace</span>
                 </div>
               </section>
             </>
-          ) : activePage === "Shared with me" ? (
+          )}
+
+          {activePage === "Shared with me" && (
             <section className="documents-panel">
               <div className="panel-heading">
                 <div>
@@ -573,32 +819,43 @@ function App() {
                           Loading shared documents...
                         </td>
                       </tr>
-                    ) : filteredSharedDocuments.map((doc) => (
-                      <tr key={doc.id}>
-                        <td>
-                          <div className="document-cell">
-                            <div className="file-icon">FILE</div>
-                            <div>
-                              <strong>{doc.name}</strong>
-                              <span>Document ID: {doc.id}</span>
+                    ) : (
+                      filteredSharedDocuments.map((doc) => (
+                        <tr key={doc.id}>
+                          <td>
+                            <div className="document-cell">
+                              <div className="file-icon">FILE</div>
+                              <div>
+                                <strong>{doc.name}</strong>
+                                <span>Document ID: {doc.id}</span>
+                              </div>
                             </div>
-                          </div>
-                        </td>
-                        <td><span className="category-pill">{doc.category}</span></td>
-                        <td>
-                          <div className="owner-cell">
-                            <span>{(doc.owner || "?").charAt(0).toUpperCase()}</span>
-                            {doc.owner}
-                          </div>
-                        </td>
-                        <td className="date-cell">{formatDate(doc.uploadedAt)}</td>
-                        <td>
-                          <span className="category-pill">
-                            {doc.permission || "READ"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td>
+                            <span className="category-pill">
+                              {doc.category || "General"}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="owner-cell">
+                              <span>
+                                {(doc.owner || "?").charAt(0).toUpperCase()}
+                              </span>
+                              {doc.owner || "—"}
+                            </div>
+                          </td>
+                          <td className="date-cell">
+                            {formatDate(doc.uploadedAt)}
+                          </td>
+                          <td>
+                            <span className="category-pill">
+                              {doc.permission || "READ"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+
                     {!sharedLoading && filteredSharedDocuments.length === 0 && (
                       <tr>
                         <td colSpan="5" className="empty-state">
@@ -619,11 +876,142 @@ function App() {
                 <span className="footer-lock">♧ Access-controlled documents</span>
               </div>
             </section>
-          ) : (
-            <section className="documents-panel placeholder-panel">
-              <h2>{activePage}</h2>
-              <p>This section's backend integration is not implemented yet.</p>
+          )}
+
+          {activePage === "Activity logs" && (
+            <section className="documents-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Security activity</h2>
+                  <p>Audit events available to authorized administrators.</p>
+                </div>
+                <button
+                  className="filter-button"
+                  disabled={auditLoading}
+                  onClick={() => loadAuditLogs(authenticatedUser, password)}
+                >
+                  {auditLoading ? "Refreshing..." : "↻ Refresh"}
+                </button>
+              </div>
+
+              {auditLoading ? (
+                <div className="empty-state">Loading audit records...</div>
+              ) : auditUnavailable ? (
+                <div className="empty-state">
+                  <h3>Administrator access required</h3>
+                  <p>
+                    Your account does not have permission to view audit records.
+                    Sign in with an authorized administrator account to access
+                    this page.
+                  </p>
+                </div>
+              ) : auditLogs.length === 0 ? (
+                <div className="empty-state">
+                  <h3>No audit records to display</h3>
+                  <p>No records were returned by the audit API. Refresh to check again.</p>
+                </div>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>EVENT</th>
+                        <th>USER</th>
+                        <th>DOCUMENT</th>
+                        <th>DATE</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditLogs.map((log, index) => (
+                        <tr key={log.id ?? index}>
+                          <td>
+                            <span className="category-pill">
+                              {log.action || log.eventType || log.event || "Activity"}
+                            </span>
+                          </td>
+                          <td>
+                            {log.username || log.actorUsername || log.user || "—"}
+                          </td>
+                          <td>{log.documentId ?? log.resourceId ?? "—"}</td>
+                          <td className="date-cell">
+                            {formatDate(log.createdAt || log.timestamp || log.eventTime)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="panel-footer">
+                <span>Audit records are subject to backend access controls.</span>
+                <span className="footer-lock">♧ Security audit</span>
+              </div>
             </section>
+          )}
+
+          {activePage === "Settings" && (
+            <>
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <div className="stat-top">
+                    <span>Account</span>
+                    <div className="stat-icon blue">♙</div>
+                  </div>
+                  <div className="stat-number stat-user">{authenticatedUser}</div>
+                  <div className="stat-foot">Current signed-in username</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-top">
+                    <span>My documents</span>
+                    <div className="stat-icon purple">▤</div>
+                  </div>
+                  <div className="stat-number">{documents.length}</div>
+                  <div className="stat-foot">Documents owned by your account</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-top">
+                    <span>Workspace</span>
+                    <div className="stat-icon green">✓</div>
+                  </div>
+                  <div className="stat-number">Active</div>
+                  <div className="stat-foot">Authenticated session</div>
+                </div>
+              </div>
+
+              <section className="documents-panel">
+                <div className="panel-heading">
+                  <div>
+                    <h2>Account information</h2>
+                    <p>Current session details and security guidance.</p>
+                  </div>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <tbody>
+                      <tr><th>Username</th><td>{authenticatedUser}</td></tr>
+                      <tr>
+                        <th>Session status</th>
+                        <td><span className="access-pill"><span /> Signed in</span></td>
+                      </tr>
+                      <tr><th>Authentication</th><td>HTTP Basic authentication</td></tr>
+                      <tr><th>Document access</th><td>Controlled by backend permissions</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div className="empty-state">
+                  <h3>Keep your documents secure</h3>
+                  <p>
+                    Keep your password private. Grant document access only to
+                    the users who need it, and revoke access when it is no
+                    longer required.
+                  </p>
+                  <button className="primary-button" onClick={handleLogout}>
+                    Sign out securely
+                  </button>
+                </div>
+              </section>
+            </>
           )}
 
           <footer className="page-footer">
@@ -634,16 +1022,28 @@ function App() {
       </main>
 
       {showUpload && (
-        <div className="modal-backdrop" onClick={(event) => {
-          if (event.target === event.currentTarget && !uploading) setShowUpload(false);
-        }}>
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !uploading) {
+              setShowUpload(false);
+            }
+          }}
+        >
           <form className="upload-modal" onSubmit={handleUpload}>
             <div className="modal-heading">
               <div>
                 <h2>Upload document</h2>
                 <p>Add a document to your secure workspace.</p>
               </div>
-              <button type="button" className="modal-close" disabled={uploading} onClick={() => setShowUpload(false)}>×</button>
+              <button
+                type="button"
+                className="modal-close"
+                disabled={uploading}
+                onClick={() => setShowUpload(false)}
+              >
+                ×
+              </button>
             </div>
 
             <label htmlFor="documentName">Document name</label>
@@ -673,10 +1073,20 @@ function App() {
               accept=".pdf,.txt,.png,.jpg,.jpeg,.docx"
               required
             />
-            <p className="upload-hint">Allowed types: PDF, TXT, PNG, JPG, JPEG, DOCX. Maximum 10 MB.</p>
+
+            <p className="upload-hint">
+              Allowed types: PDF, TXT, PNG, JPG, JPEG, DOCX. Maximum 10 MB.
+            </p>
 
             <div className="modal-actions">
-              <button type="button" className="filter-button" disabled={uploading} onClick={() => setShowUpload(false)}>Cancel</button>
+              <button
+                type="button"
+                className="filter-button"
+                disabled={uploading}
+                onClick={() => setShowUpload(false)}
+              >
+                Cancel
+              </button>
               <button className="primary-button" disabled={uploading}>
                 {uploading ? "Uploading..." : "Upload securely"}
               </button>
@@ -705,7 +1115,9 @@ function App() {
                 className="modal-close"
                 disabled={sharingLoading}
                 onClick={() => setSelectedDoc(null)}
-              >×</button>
+              >
+                ×
+              </button>
             </div>
 
             <form onSubmit={grantAccess}>
@@ -738,7 +1150,6 @@ function App() {
 
             <div className="sharing-list">
               <h3>Users with access</h3>
-
               {sharingLoading ? (
                 <p>Loading permissions...</p>
               ) : permissions.length === 0 ? (
