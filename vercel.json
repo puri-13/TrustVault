@@ -6,7 +6,6 @@
       "framework": "vite",
       "buildCommand": "npm run build",
       "installCommand": "npm install",
-      "outputDirectory": "dist",
       "rootDirectory": "frontend"
     },
     "backend": {
