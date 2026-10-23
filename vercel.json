@@ -1,27 +1,17 @@
 
 {
-  "services": {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "experimentalServices": {
     "frontend": {
-      "root": "frontend/"
+      "framework": "vite",
+      "buildCommand": "npm run build",
+      "installCommand": "npm install",
+      "outputDirectory": "dist",
+      "rootDirectory": "frontend"
     },
     "backend": {
-      "root": "./",
-      "entrypoint": "Dockerfile.vercel",
-      "runtime": "container"
+      "framework": null,
+      "buildCommand": "docker build -f Dockerfile.vercel -t trustvault-backend ."
     }
-  },
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": {
-        "service": "backend"
-      }
-    },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "service": "frontend"
-      }
-    }
-  ]
+  }
 }
