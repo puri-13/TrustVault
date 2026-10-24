@@ -182,7 +182,7 @@ For the backend, configure these in the hosting provider without committing thei
 - `PORT`: optional; defaults to `8081`
 - `REGISTRATION_RATE_LIMIT_MAX_ATTEMPTS` and `REGISTRATION_RATE_LIMIT_WINDOW_SECONDS`: optional in-memory registration limit settings; defaults are 10 attempts and 900 seconds
 
-For Vercel, set `VITE_API_BASE_URL` to the deployed backend origin (scheme and host only, with no `/api` suffix), then redeploy. This URL is public configuration, not a secret. The project does not contain a backend provider URL or credentials.
+For Vercel, set the project **Root Directory** to `frontend`, then set `VITE_API_BASE_URL` to the deployed backend origin (scheme and host only, with no `/api` suffix) and redeploy. The Vercel build/install commands and output directory are relative to `frontend`. This URL is public configuration, not a secret. The project does not contain a backend provider URL or credentials.
 
 ### Deployment sequence
 
